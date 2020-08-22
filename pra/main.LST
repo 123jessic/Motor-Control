@@ -1,0 +1,407 @@
+C51 COMPILER V9.59.0.0   MAIN                                                              08/03/2020 10:38:56 PAGE 1   
+
+
+C51 COMPILER V9.59.0.0, COMPILATION OF MODULE MAIN
+OBJECT MODULE PLACED IN main.OBJ
+COMPILER INVOKED BY: D:\keil 5\C51\BIN\C51.EXE main.c OPTIMIZE(8,SPEED) BROWSE DEBUG OBJECTEXTEND
+
+line level    source
+
+   1          #include "reg51.h"
+   2          
+   3          #define uchar unsigned char                
+   4          #define uint  unsigned int
+   5          
+   6          /*****控制端口定义*****/
+   7          // 电机端口定义
+   8          sbit motor_1  = P2^6;
+   9          sbit motor_2  = P2^7;
+  10          sbit motor_EN = P3^0;
+  11          
+  12          // 数码管位选端口定义，段选端口:P0
+  13          sbit smg_1 = P2^0;                    // 数码管1位选
+  14          sbit smg_2 = P2^1;                    // 数码管2位选
+  15          sbit smg_3 = P2^2;                    // 数码管3位选
+  16          sbit smg_4 = P2^3;                    // 数码管4位选
+  17          sbit smg_5 = P2^4;                    // 数码管5位选
+  18          sbit smg_6 = P2^5;                    // 数码管6位选
+  19          
+  20          uchar code table[10] = {0x3f,0x06,0x5b,0x4f,0x66,0x6d,0x7d,0x07,0x7f,0x6f}; // 共阴数码管
+  21          //                         0、   1、  2、   3、   4、   5、   6、  7、   8、   9
+  22          
+  23          /*****全局变量定义*****/
+  24          uint  speed_counter  = 0;         // 编码器输出计数器
+  25          uint  speed          = 0;     // 实际速度
+  26          uint  set_speed      = 10;        // 设定速度
+  27          uint  target_speed   = 10;        // 目标速度
+  28          uint  PWM            = 0;     // PWM波占空比 PWM %
+  29          int   pwm_reg        = 0;
+  30          uchar motor_begin    = 0;     // 电机开始转动标志位 
+  31          uchar PID_begin      = 0;     // PID计算标志位
+  32          // PID相关参数
+  33          float Kp = 2.0, 
+  34                Ki = 0.6, 
+  35                Kd = 0.4;               // P I D 参数
+  36          int   error = 0;              // 速度偏差
+  37          int   last_error_1 = 0;       // 上一次速度偏差
+  38          int   last_error_2 = 0;       // 上上一次速度偏差
+  39          
+  40          /*****函数声明*****/
+  41          void display(uchar i, uchar number);                    // 显示函数
+  42          void delay();                                                                   // 延时函数
+  43          void KeyScan();                                                                 // 按键扫描函数
+  44          int  PID(uint tar_speed, uint real_speed);              // PID调节函数
+  45          
+  46          
+  47          /**************************************
+  48          // 函数名 主函数
+  49          // 参  数 无
+  50          // 返回值 无
+  51          ***************************************/
+  52          void main()
+  53          {
+  54   1          P0 = 0x00; 
+  55   1          P1 = 0xf0;
+C51 COMPILER V9.59.0.0   MAIN                                                              08/03/2020 10:38:56 PAGE 2   
+
+  56   1              TMOD = 0x01;            // 定时器0方式1
+  57   1          TH0 = 0xFF;             // 定时器赋初值 定时100us
+  58   1          TL0 = 0x9C; 
+  59   1              EA  = 1;                // 打开总中断
+  60   1              ET0 = 1;                        // 打开定时器0中断
+  61   1              TR0 = 1;                    // 打开定时器0
+  62   1              IT0 = 1;                        // 设置外部中断0触发方式, 0为低电平触发 1为下降沿触发
+  63   1              EX0 = 1;                        // 打开外部中断0
+  64   1          motor_1 = 0;
+  65   1          motor_2 = 0;
+  66   1              
+  67   1          while(1)
+  68   1          {
+  69   2              KeyScan(); // 按键扫描
+  70   2                      
+  71   2                      // 显示实际速度
+  72   2                      display(1,speed / 100);         delay();
+  73   2                      display(2,speed % 100 / 10);delay();
+  74   2                      display(3,speed % 10);          delay();
+  75   2                      
+  76   2                      // 显示设定速度
+  77   2                      display(4,set_speed / 100);         delay();
+  78   2                      display(5,set_speed % 100 / 10);delay();
+  79   2                      display(6,set_speed % 10);          delay();
+  80   2                      
+  81   2                      // PWM更新
+  82   2                      if(PID_begin == 1)
+  83   2                      {
+  84   3                  PWM = PID(target_speed, speed);
+  85   3                              PID_begin = 0;
+  86   3                      }
+  87   2              }
+  88   1      }
+  89          
+  90          
+  91          /**************************************
+  92          // 函数名 PID调节函数
+  93          // 参  数 tar_speed  目标速度
+  94          //                real_speed 实际速度
+  95          // 返回值 pwm        PWM波占空比
+  96           **************************************/
+  97          int PID(uint tar_speed, uint real_speed)
+  98          {    
+  99   1          static int pwm_INC = 0, np = 0, ni = 0, nd = 0;
+ 100   1          
+ 101   1          // 计算pwm输出增量
+ 102   1              error = tar_speed - real_speed;    
+ 103   1          np = Kp * (error - last_error_1);
+ 104   1          ni = Ki * error;
+ 105   1          nd = Kd * (error - 2 * last_error_1 + last_error_2);
+ 106   1          pwm_INC = np + ni + nd;
+ 107   1          
+ 108   1          pwm_reg = pwm_reg + pwm_INC;
+ 109   1       
+ 110   1          last_error_2 = last_error_1;
+ 111   1              last_error_1 = error;
+ 112   1          
+ 113   1          // 输出限幅
+ 114   1              if(pwm_reg < 0)
+ 115   1                      pwm_reg = 0;
+ 116   1              if(pwm_reg > 100)
+ 117   1                      pwm_reg = 100;
+C51 COMPILER V9.59.0.0   MAIN                                                              08/03/2020 10:38:56 PAGE 3   
+
+ 118   1          
+ 119   1              pwm_INC = 0;
+ 120   1          return pwm_reg;
+ 121   1          
+ 122   1      }
+ 123          
+ 124          
+ 125          /**************************************
+ 126          // 函数名 定时器0中断服务函数
+ 127          // 参  数 无
+ 128          // 返回值 无
+ 129          ***************************************/
+ 130          void TR0_isr() interrupt 1
+ 131          {
+ 132   1              static uint i = 0;
+ 133   1              static uint speed_control = 0;
+ 134   1              
+ 135   1          TH0 = 0xFF; // 定时器重装载值，定时100us
+ 136   1          TL0 = 0x9C;
+ 137   1              
+ 138   1              i++;
+ 139   1              speed_control++;
+ 140   1              
+ 141   1              // 采样周期 500ms
+ 142   1              if(i == 5000)
+ 143   1              {       
+ 144   2                      speed = speed_counter;
+ 145   2                      speed_counter = 0;
+ 146   2                      i = 0;
+ 147   2                      if(motor_begin == 1) // PID计算一次
+ 148   2                              PID_begin = 1;
+ 149   2              }
+ 150   1              
+ 151   1              // PWM波周期 10ms 频率 100Hz
+ 152   1              if(speed_control <= PWM)
+ 153   1                      motor_EN = 1;
+ 154   1              if(speed_control >  PWM)
+ 155   1                      motor_EN = 0;
+ 156   1              if(speed_control >= 100)
+ 157   1                      speed_control = 0;
+ 158   1      }
+ 159          
+ 160          
+ 161          /**************************************
+ 162          // 函数名 外部中断0服务函数
+ 163          // 参  数 无
+ 164          // 返回值 无
+ 165          ***************************************/
+ 166          void INT0_isr() interrupt 0    
+ 167          {
+ 168   1              speed_counter++;                // 电机编码器输出计数
+ 169   1      }
+ 170          
+ 171          
+ 172          /**************************************
+ 173          // 函数名 延时1ms函数
+ 174          // 参  数 无
+ 175          // 返回值 无
+ 176          ***************************************/
+ 177          void delay() 
+ 178          {
+ 179   1              uchar i, j; 
+C51 COMPILER V9.59.0.0   MAIN                                                              08/03/2020 10:38:56 PAGE 4   
+
+ 180   1              for(i = 0; i < 10; i++) 
+ 181   1                      for(j = 0; j < 33; j++) ; 
+ 182   1      }
+ 183          
+ 184          
+ 185          /**************************************
+ 186          // 函数名 按键扫描函数
+ 187          // 参  数 无
+ 188          // 返回值 无
+ 189          //
+ 190          ////////////按键布局//////////////
+ 191          //   1      2      3      4    //
+ 192          //   5      6      7      8    //
+ 193          //   9      0    确认键 清零键  //
+ 194          // 开始键 停止键  预留   预留    //
+ 195          /////////////////////////////////
+ 196          ***************************************/
+ 197          void KeyScan()
+ 198          {
+ 199   1              static uchar ten_flag = 0;
+ 200   1              P1 = 0x0f;
+ 201   1              if (P1 != 0x0f)
+ 202   1              {
+ 203   2                      switch(P1)
+ 204   2                      {
+ 205   3                              //第一行按键按下
+ 206   3                              case 0x07: 
+ 207   3                                      P1 = 0xf0;
+ 208   3                                      switch(P1)
+ 209   3                                      {
+ 210   4                                              // 第一行第一个按键 数字1
+ 211   4                                              case 0xe0 : 
+ 212   4                                                      if(ten_flag == 0) 
+ 213   4                                                      {
+ 214   5                                                              set_speed = 1;
+ 215   5                                                              ten_flag = 1;
+ 216   5                                                      }
+ 217   4                                                      else
+ 218   4                                                              set_speed = set_speed * 10 + 1 ; 
+ 219   4                                              break;
+ 220   4                                              // 第一行第二个按键 数字2       
+ 221   4                                              case 0xd0 :
+ 222   4                                                      if(ten_flag == 0) 
+ 223   4                                                      {
+ 224   5                                                              set_speed = 2;
+ 225   5                                                              ten_flag = 1;
+ 226   5                                                      }
+ 227   4                                                      else 
+ 228   4                                                              set_speed = set_speed * 10 + 2; 
+ 229   4                                              break;  
+ 230   4                                              // 第一行第三个按键 数字3
+ 231   4                                              case 0xb0 :                                             
+ 232   4                                                      if(ten_flag == 0) 
+ 233   4                                                      {
+ 234   5                                                              set_speed = 3;
+ 235   5                                                              ten_flag = 1;
+ 236   5                                                      }
+ 237   4                                                      else 
+ 238   4                                                              set_speed = set_speed * 10 + 3; 
+ 239   4                                              break;
+ 240   4                                              // 第一行第四个按键 数字4       
+ 241   4                                              case 0x70 : 
+C51 COMPILER V9.59.0.0   MAIN                                                              08/03/2020 10:38:56 PAGE 5   
+
+ 242   4                                                      if(ten_flag == 0) 
+ 243   4                                                      {
+ 244   5                                                              set_speed = 4;
+ 245   5                                                              ten_flag = 1;
+ 246   5                                                      }
+ 247   4                                                      else 
+ 248   4                                                              set_speed = set_speed * 10 + 4; 
+ 249   4                                              break;
+ 250   4                                      } while(P1 != 0xf0); break;
+ 251   3                      
+ 252   3                              //第二行按键按下        
+ 253   3                              case 0x0b: 
+ 254   3                                      P1 = 0xf0;
+ 255   3                                      switch(P1)
+ 256   3                                      {
+ 257   4                                              // 第二行第一个按键 数字5
+ 258   4                                              case 0xe0 : 
+ 259   4                                                      if(ten_flag == 0) 
+ 260   4                                                      {
+ 261   5                                                              set_speed = 5;
+ 262   5                                                              ten_flag = 1;
+ 263   5                                                      }
+ 264   4                                                      else 
+ 265   4                                                              set_speed = set_speed * 10 + 5; 
+ 266   4                                              break;
+ 267   4                                              // 第二行第二个按键 数字6       
+ 268   4                                              case 0xd0 :
+ 269   4                                                      if(ten_flag == 0) 
+ 270   4                                                      {
+ 271   5                                                              set_speed = 6;
+ 272   5                                                              ten_flag = 1;
+ 273   5                                                      }
+ 274   4                                                      else 
+ 275   4                                                              set_speed = set_speed * 10 + 6; 
+ 276   4                                              break;  
+ 277   4                                              // 第二行第三个按键 数字7       
+ 278   4                                              case 0xb0 :                                             
+ 279   4                                                      if(ten_flag == 0) 
+ 280   4                                                      {
+ 281   5                                                              set_speed = 7;
+ 282   5                                                              ten_flag = 1;
+ 283   5                                                      }
+ 284   4                                                      else 
+ 285   4                                                              set_speed = set_speed * 10 + 7; 
+ 286   4                                              break;
+ 287   4                                              // 第二行第四个按键 数字8       
+ 288   4                                              case 0x70 : 
+ 289   4                                                      if(ten_flag == 0) 
+ 290   4                                                      {
+ 291   5                                                              set_speed = 8;
+ 292   5                                                              ten_flag = 1;
+ 293   5                                                      }
+ 294   4                                                      else 
+ 295   4                                                              set_speed = set_speed * 10 + 8; 
+ 296   4                                              break;
+ 297   4                                      }while(P1 != 0xf0); break;
+ 298   3                      
+ 299   3                              //第三行按键按下
+ 300   3                              case 0x0d: 
+ 301   3                                      P1 = 0xf0;
+ 302   3                                      switch(P1)
+ 303   3                                      {
+C51 COMPILER V9.59.0.0   MAIN                                                              08/03/2020 10:38:56 PAGE 6   
+
+ 304   4                                              // 第三行第一个按键 数字9
+ 305   4                                              case 0xe0 :
+ 306   4                                                      if(ten_flag == 0) 
+ 307   4                                                      {
+ 308   5                                                              set_speed = 9;
+ 309   5                                                              ten_flag = 1;
+ 310   5                                                      }
+ 311   4                                                      else 
+ 312   4                                                              set_speed = set_speed * 10 +9 ; 
+ 313   4                                              break;
+ 314   4                                              // 第三行第二个按键 数字0       
+ 315   4                                              case 0xd0 : 
+ 316   4                                                      if(ten_flag == 0) 
+ 317   4                                                      {
+ 318   5                                                              set_speed = 0;
+ 319   5                                                              ten_flag = 0;
+ 320   5                                                      }
+ 321   4                                                      else 
+ 322   4                                                              set_speed = set_speed * 10; 
+ 323   4                                              break;
+ 324   4                                              // 第三行第三个按键 确认键
+ 325   4                                              case 0xb0 : target_speed = set_speed;ten_flag=0; break;
+ 326   4                                              // 第三行第四个按键 清零键      
+ 327   4                                              case 0x70 : set_speed = 0;ten_flag=0;break;
+ 328   4                                      }while(P1 != 0xf0); break;
+ 329   3                      
+ 330   3                              //第四行按键按下
+ 331   3                              case 0x0e: 
+ 332   3                                      P1 = 0xf0;
+ 333   3                                      switch(P1)
+ 334   3                                      {
+ 335   4                                              // 第四行第一个按键 开始键
+ 336   4                                              case 0xe0 : motor_begin = 1; motor_1 = 0; motor_2       = 1; break;
+ 337   4                                              // 第四行第二个按键 停止键
+ 338   4                                              case 0xd0 : motor_begin = 0; PWM = 0; pwm_reg = 0; motor_1 = 0; motor_2 = 0; break;
+ 339   4                                              // 第四行第三个按键 预留
+ 340   4                                              case 0xb0 : break;
+ 341   4                                              // 第四行第四个按键 预留
+ 342   4                                              case 0x70 : break;
+ 343   4                                      } while(P1 != 0xf0);break;
+ 344   3                      }
+ 345   2              }
+ 346   1      }
+ 347          
+ 348          
+ 349          /**************************************
+ 350          // 函数名 数码管显示函数 
+ 351          // 参  数 i : 选择第i个数码管显示 范围:1-6
+ 352          //                number : 显示数字number 范围:0-9
+ 353          // 返回值 无
+ 354          ***************************************/
+ 355          void display(uchar i, uchar number)
+ 356          {
+ 357   1              switch (i)
+ 358   1              {
+ 359   2                      case 1 : smg_1 = 0; smg_2 = 1;smg_3 = 1;smg_4 = 1; smg_5 = 1; smg_6 = 1; break;
+ 360   2                      case 2 : smg_1 = 1; smg_2 = 0;smg_3 = 1;smg_4 = 1; smg_5 = 1; smg_6 = 1; break;
+ 361   2                      case 3 : smg_1 = 1; smg_2 = 1;smg_3 = 0;smg_4 = 1; smg_5 = 1; smg_6 = 1; break;
+ 362   2                      case 4 : smg_1 = 1; smg_2 = 1;smg_3 = 1;smg_4 = 0; smg_5 = 1; smg_6 = 1; break;
+ 363   2                      case 5 : smg_1 = 1; smg_2 = 1;smg_3 = 1;smg_4 = 1; smg_5 = 0; smg_6 = 1; break;
+ 364   2                      case 6 : smg_1 = 1; smg_2 = 1;smg_3 = 1;smg_4 = 1; smg_5 = 1; smg_6 = 0; break;         
+ 365   2              }
+C51 COMPILER V9.59.0.0   MAIN                                                              08/03/2020 10:38:56 PAGE 7   
+
+ 366   1              P0 = table[number];
+ 367   1      }
+ 368          
+ 369          
+ 370          
+ 371          
+ 372          
+
+
+MODULE INFORMATION:   STATIC OVERLAYABLE
+   CODE SIZE        =   1152    ----
+   CONSTANT SIZE    =     10    ----
+   XDATA SIZE       =   ----    ----
+   PDATA SIZE       =   ----    ----
+   DATA SIZE        =     45    ----
+   IDATA SIZE       =   ----    ----
+   BIT SIZE         =   ----    ----
+END OF MODULE INFORMATION.
+
+
+C51 COMPILATION COMPLETE.  0 WARNING(S),  0 ERROR(S)
